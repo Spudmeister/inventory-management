@@ -5,6 +5,40 @@
       <p>{{ t('orders.description') }}</p>
     </div>
 
+    <!-- Submitted Restocking Orders - independent of filter-driven orders -->
+    <div v-if="restockingOrders.length > 0" class="card restocking-section">
+      <div class="card-header">
+        <h3 class="card-title">{{ t('restocking.submittedOrders') }}</h3>
+        <span class="badge warning">{{ restockingOrders.length }}</span>
+      </div>
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>{{ t('orders.table.orderNumber') }}</th>
+              <th>{{ t('orders.table.warehouse') }}</th>
+              <th>{{ t('orders.table.items') }}</th>
+              <th>{{ t('orders.table.status') }}</th>
+              <th>{{ t('orders.table.orderDate') }}</th>
+              <th>{{ t('restocking.eta') }}</th>
+              <th>{{ t('orders.table.totalValue') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="order in restockingOrders" :key="order.id">
+              <td><strong>{{ order.order_number }}</strong></td>
+              <td>{{ order.warehouse }}</td>
+              <td>{{ order.items.length }} {{ t('common.items') }}</td>
+              <td><span class="badge warning">{{ order.status }}</span></td>
+              <td>{{ formatDate(order.order_date) }}</td>
+              <td>{{ formatDate(order.eta) }}</td>
+              <td><strong>{{ currencySymbol }}{{ order.total_value.toLocaleString() }}</strong></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <div v-if="loading" class="loading">{{ t('common.loading') }}</div>
     <div v-else-if="error" class="error">{{ error }}</div>
     <div v-else>
@@ -95,6 +129,15 @@ export default {
     const loading = ref(true)
     const error = ref(null)
     const orders = ref([])
+    const restockingOrders = ref([])
+
+    const loadRestockingOrders = async () => {
+      try {
+        restockingOrders.value = await api.getRestockingOrders()
+      } catch (err) {
+        console.error('Failed to load restocking orders:', err)
+      }
+    }
 
     // Use shared filters
     const {
@@ -153,13 +196,17 @@ export default {
       })
     }
 
-    onMounted(loadOrders)
+    onMounted(() => {
+      loadOrders()
+      loadRestockingOrders()
+    })
 
     return {
       t,
       loading,
       error,
       orders,
+      restockingOrders,
       getOrdersByStatus,
       getOrderStatusClass,
       formatDate,
