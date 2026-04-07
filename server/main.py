@@ -89,6 +89,7 @@ class DemandForecast(BaseModel):
     forecasted_demand: int
     trend: str
     period: str
+    unit_cost: float
 
 class BacklogItem(BaseModel):
     id: str
@@ -303,6 +304,162 @@ def get_monthly_trends():
     result = list(months.values())
     result.sort(key=lambda x: x['month'])
     return result
+
+# In-memory restocking orders (cleared on server restart)
+restocking_orders: list = []
+
+class RestockingOrderItem(BaseModel):
+    item_sku: str
+    item_name: str
+    quantity: int
+    unit_cost: float
+    line_total: float
+
+class RestockingOrder(BaseModel):
+    id: str
+    order_number: str
+    status: str
+    order_date: str
+    eta: str
+    warehouse: str
+    items: List[RestockingOrderItem]
+    total_value: float
+
+class CreateRestockingOrderRequest(BaseModel):
+    warehouse: str
+    items: List[RestockingOrderItem]
+
+@app.get("/api/restocking-orders", response_model=List[RestockingOrder])
+def get_restocking_orders():
+    """Get all submitted restocking orders (in-memory, not persisted)"""
+    return restocking_orders
+
+@app.post("/api/restocking-orders", response_model=RestockingOrder, status_code=201)
+def create_restocking_order(request: CreateRestockingOrderRequest):
+    """Submit a new restocking order from selected demand forecast items"""
+    from datetime import date, timedelta
+    import uuid
+
+    order_date = date.today()
+    eta = order_date + timedelta(days=14)
+    short_id = uuid.uuid4().hex[:4].upper()
+    order_number = f"RST-{order_date.strftime('%Y%m%d')}-{short_id}"
+    total_value = round(sum(item.line_total for item in request.items), 2)
+
+    new_order = {
+        "id": str(uuid.uuid4()),
+        "order_number": order_number,
+        "status": "Processing",
+        "order_date": order_date.isoformat(),
+        "eta": eta.isoformat(),
+        "warehouse": request.warehouse,
+        "items": [item.dict() for item in request.items],
+        "total_value": total_value
+    }
+    # Insert newest first so GET returns reverse-chronological order
+    restocking_orders.insert(0, new_order)
+    return new_order
+
+# In-memory tasks store (cleared on server restart)
+api_tasks: list = []
+
+class Task(BaseModel):
+    id: str
+    title: str
+    status: str  # "pending" | "completed"
+    priority: str  # "high" | "medium" | "low"
+    due_date: Optional[str] = None
+
+class CreateTaskRequest(BaseModel):
+    title: str
+    priority: str = "medium"
+    due_date: Optional[str] = None
+
+@app.get("/api/tasks", response_model=List[Task])
+def get_tasks():
+    """Get all tasks (in-memory, not persisted)"""
+    return api_tasks
+
+@app.post("/api/tasks", response_model=Task, status_code=201)
+def create_task(request: CreateTaskRequest):
+    """Create a new task"""
+    import uuid
+    new_task = {
+        "id": str(uuid.uuid4()),
+        "title": request.title,
+        "status": "pending",
+        "priority": request.priority,
+        "due_date": request.due_date
+    }
+    api_tasks.insert(0, new_task)
+    return new_task
+
+@app.delete("/api/tasks/{task_id}", status_code=204)
+def delete_task(task_id: str):
+    """Delete a task by ID"""
+    global api_tasks
+    original_len = len(api_tasks)
+    api_tasks = [t for t in api_tasks if t["id"] != task_id]
+    if len(api_tasks) == original_len:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+@app.patch("/api/tasks/{task_id}", response_model=Task)
+def toggle_task(task_id: str):
+    """Toggle a task's status between pending and completed"""
+    for task in api_tasks:
+        if task["id"] == task_id:
+            task["status"] = "completed" if task["status"] == "pending" else "pending"
+            return task
+    raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+
+# Purchase orders (in-memory via purchase_orders list loaded from mock_data)
+class PurchaseOrder(BaseModel):
+    id: str
+    backlog_item_id: str
+    supplier: str
+    quantity: int
+    unit_cost: float
+    total_cost: float
+    expected_delivery: str
+    status: str
+    created_date: str
+
+class CreatePurchaseOrderRequest(BaseModel):
+    backlog_item_id: str
+    supplier: str
+    quantity: int
+    unit_cost: float
+    total_cost: float
+    expected_delivery: str
+
+@app.post("/api/purchase-orders", response_model=PurchaseOrder, status_code=201)
+def create_purchase_order(request: CreatePurchaseOrderRequest):
+    """Create a new purchase order for a backlog item"""
+    import uuid
+    from datetime import date
+    new_po = {
+        "id": str(uuid.uuid4()),
+        "backlog_item_id": request.backlog_item_id,
+        "supplier": request.supplier,
+        "quantity": request.quantity,
+        "unit_cost": request.unit_cost,
+        "total_cost": request.total_cost,
+        "expected_delivery": request.expected_delivery,
+        "status": "Pending",
+        "created_date": date.today().isoformat()
+    }
+    purchase_orders.insert(0, new_po)
+    return new_po
+
+@app.get("/api/purchase-orders/{backlog_item_id}", response_model=PurchaseOrder)
+def get_purchase_order_by_backlog_item(backlog_item_id: str):
+    """Get a purchase order by backlog item ID"""
+    for po in purchase_orders:
+        if po.get("backlog_item_id") == backlog_item_id:
+            return po
+    raise HTTPException(status_code=404, detail=f"No purchase order found for backlog item {backlog_item_id}")
+
 
 if __name__ == "__main__":
     import uvicorn
